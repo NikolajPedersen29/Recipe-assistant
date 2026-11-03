@@ -1,0 +1,141 @@
+{
+  "name": "Tool - graph_search",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "mustHave"
+            },
+            {
+              "name": "exclude"
+            },
+            {
+              "name": "tag"
+            },
+            {
+              "name": "maxTime",
+              "type": "number"
+            },
+            {
+              "name": "category"
+            }
+          ]
+        }
+      },
+      "id": "c1000000-0000-4000-8000-000000000001",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filtrerer opskrifter i grafen ud fra hårde krav\nconst input = $('Start').first().json;\nconst toList = v => (Array.isArray(v) ? v : String(v || '').split(','))\n  .map(s => String(s).trim().toLowerCase()).filter(Boolean);\nconst maxTime = Number(input.maxTime) > 0 ? Math.round(Number(input.maxTime)) : null;\nconst tag = input.tag ? String(input.tag).trim().toLowerCase() : null;\nconst category = input.category ? String(input.category).trim() : null;\nconst parameters = {\n  mustHave: toList(input.mustHave),\n  exclude: toList(input.exclude),\n  tag, maxTime, category, limit: 10\n};\nconst statement = [\n  \"MATCH (r:Recipe)\",\n  \"WHERE ($maxTime IS NULL OR (r.totalTime IS NOT NULL AND r.totalTime <= $maxTime))\",\n  \"AND all(m IN $mustHave WHERE EXISTS { MATCH (r)-[:HAS_INGREDIENT]->(i:Ingredient) WHERE i.name CONTAINS m })\",\n  \"AND none(x IN $exclude WHERE EXISTS { MATCH (r)-[:HAS_INGREDIENT]->(i:Ingredient) WHERE i.name CONTAINS x })\",\n  \"AND ($tag IS NULL OR EXISTS { MATCH (r)-[:HAS_TAG]->(t:Tag) WHERE t.name CONTAINS $tag })\",\n  \"AND ($category IS NULL OR EXISTS { MATCH (r)-[:IN_CATEGORY]->(c:Category) WHERE toLower(c.name) CONTAINS toLower($category) })\",\n  \"OPTIONAL MATCH (r)-[:IN_CATEGORY]->(cat:Category)\",\n  \"RETURN r.id AS recipeId, r.name AS name, r.totalTime AS minutes, r.rating AS rating, cat.name AS category,\",\n  \"  [(r)-[:HAS_INGREDIENT]->(i) | i.name] AS ingredients,\",\n  \"  [(r)-[:HAS_TAG]->(t) | t.name] AS tags,\",\n  \"  'Neo4j graph (Food.com RecipeId ' + r.id + ')' AS source\",\n  \"ORDER BY coalesce(r.rating, 0) DESC\",\n  \"LIMIT $limit\"\n].join(' ');\nreturn [{ json: { statements: [{ statement, parameters }] } }];"
+      },
+      "id": "c1000000-0000-4000-8000-000000000002",
+      "name": "Byg graf-Cypher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic bmVvNGo6cGFzc3dvcmQxMjM="
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-8000-000000000003",
+      "name": "Neo4j - kør query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Laver Neo4j's svar om til en læsbar liste til agenten\nconst res = $input.first().json;\nif (res.errors && res.errors.length) {\n  return [{ json: { error: res.errors.map(e => e.message).join('; ') } }];\n}\nconst r = res.results[0];\nconst rows = r.data.map(d => Object.fromEntries(r.columns.map((c, i) => [c, d.row[i]])));\nreturn [{ json: { count: rows.length, results: rows } }];"
+      },
+      "id": "c1000000-0000-4000-8000-000000000004",
+      "name": "Formatér resultat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Byg graf-Cypher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Byg graf-Cypher": {
+      "main": [
+        [
+          {
+            "node": "Neo4j - kør query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j - kør query": {
+      "main": [
+        [
+          {
+            "node": "Formatér resultat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Start": [
+      {
+        "json": {
+          "mustHave": "chicken, garlic",
+          "exclude": "nut",
+          "tag": "",
+          "maxTime": 60,
+          "category": ""
+        }
+      }
+    ]
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

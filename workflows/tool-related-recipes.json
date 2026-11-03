@@ -1,0 +1,124 @@
+{
+  "name": "Tool - related_recipes",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "recipeId"
+            }
+          ]
+        }
+      },
+      "id": "d1000000-0000-4000-8000-000000000001",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Finder opskrifter der deler flest ingredienser og tags med en given opskrift\nconst input = $('Start').first().json;\nconst recipeId = String(input.recipeId || '').trim();\nconst statement = [\n  \"MATCH (r:Recipe {id: $recipeId})-[:HAS_INGREDIENT]->(i:Ingredient)<-[:HAS_INGREDIENT]-(o:Recipe)\",\n  \"WITH r, o, collect(i.name) AS shared\",\n  \"OPTIONAL MATCH (r)-[:HAS_TAG]->(t:Tag)<-[:HAS_TAG]-(o)\",\n  \"WITH r, o, shared, count(t) AS sharedTags\",\n  \"RETURN r.name AS forRecipe, o.id AS recipeId, o.name AS name,\",\n  \"  size(shared) AS sharedIngredients, shared, sharedTags, o.rating AS rating,\",\n  \"  'Neo4j graph (Food.com RecipeId ' + o.id + ')' AS source\",\n  \"ORDER BY sharedIngredients DESC, sharedTags DESC LIMIT 5\"\n].join(' ');\nreturn [{ json: { statements: [{ statement, parameters: { recipeId } }] } }];"
+      },
+      "id": "d1000000-0000-4000-8000-000000000002",
+      "name": "Byg relations-Cypher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic bmVvNGo6cGFzc3dvcmQxMjM="
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "d1000000-0000-4000-8000-000000000003",
+      "name": "Neo4j - kør query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Laver Neo4j's svar om til en læsbar liste til agenten\nconst res = $input.first().json;\nif (res.errors && res.errors.length) {\n  return [{ json: { error: res.errors.map(e => e.message).join('; ') } }];\n}\nconst r = res.results[0];\nconst rows = r.data.map(d => Object.fromEntries(r.columns.map((c, i) => [c, d.row[i]])));\nreturn [{ json: { count: rows.length, results: rows } }];"
+      },
+      "id": "d1000000-0000-4000-8000-000000000004",
+      "name": "Formatér resultat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Byg relations-Cypher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Byg relations-Cypher": {
+      "main": [
+        [
+          {
+            "node": "Neo4j - kør query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j - kør query": {
+      "main": [
+        [
+          {
+            "node": "Formatér resultat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Start": [
+      {
+        "json": {
+          "recipeId": "38"
+        }
+      }
+    ]
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

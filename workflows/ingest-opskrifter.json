@@ -1,0 +1,136 @@
+{
+  "name": "Ingest - Opskrifter",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/data/recipes_sample.csv",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Læs CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "CSV til rækker",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parser Food.com-felterne i R-format c(\"a\", \"b\") og normaliserer data\nconst parseR = s => {\n  if (!s || s === 'NA' || s === 'character(0)') return [];\n  return [...String(s).matchAll(/\"([^\"]*)\"/g)].map(m => m[1].trim()).filter(Boolean);\n};\n// ISO-varighed (PT1H30M) -> minutter\nconst toMin = iso => {\n  const m = String(iso || '').match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/);\n  return m ? Number(m[1] || 0) * 60 + Number(m[2] || 0) : null;\n};\nreturn $input.all().map(({ json: r }) => {\n  const ingredients = [...new Set(parseR(r.RecipeIngredientParts).map(i => i.toLowerCase()))];\n  const tags = [...new Set(parseR(r.Keywords).map(t => t.toLowerCase()))];\n  const steps = parseR(r.RecipeInstructions);\n  const id = String(parseInt(r.RecipeId));\n  const category = r.RecipeCategory || 'Other';\n  return { json: {\n    id,\n    name: r.Name,\n    totalTime: toMin(r.TotalTime),\n    calories: Number(r.Calories) || null,\n    rating: Number(r.AggregatedRating) || null,\n    servings: Number(r.RecipeServings) || null,\n    category,\n    authorId: String(parseInt(r.AuthorId) || 'unknown'),\n    authorName: r.AuthorName || null,\n    ingredients,\n    tags,\n    chunkText: [\n      r.Name + '.',\n      r.Description || '',\n      'Category: ' + category,\n      'Tags: ' + tags.join(', '),\n      'Ingredients: ' + ingredients.join(', '),\n      'Instructions: ' + steps.join(' ')\n    ].join(' | ')\n  }};\n});"
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Parse opskrifter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Samler alle opskrifter i én Cypher-statement til grafen\nconst recipes = $input.all().map(({ json }) => {\n  const { chunkText, ...rest } = json;\n  return rest;\n});\nconst statement = [\n  'UNWIND $recipes AS r',\n  'MERGE (rec:Recipe {id: r.id})',\n  'SET rec.name = r.name, rec.totalTime = r.totalTime, rec.calories = r.calories, rec.rating = r.rating, rec.servings = r.servings',\n  'MERGE (c:Category {name: r.category})',\n  'MERGE (rec)-[:IN_CATEGORY]->(c)',\n  'MERGE (a:Author {id: r.authorId})',\n  'SET a.name = r.authorName',\n  'MERGE (rec)-[:AUTHORED_BY]->(a)',\n  'FOREACH (i IN r.ingredients | MERGE (ing:Ingredient {name: i}) MERGE (rec)-[:HAS_INGREDIENT]->(ing))',\n  'FOREACH (t IN r.tags | MERGE (tag:Tag {name: t}) MERGE (rec)-[:HAS_TAG]->(tag))'\n].join(' ');\nreturn [{ json: { statements: [{ statement, parameters: { recipes } }] } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Byg graf-Cypher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, -140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic bmVvNGo6cGFzc3dvcmQxMjM=" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Neo4j - gem graf",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, -140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', input: $json.chunkText }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Ollama - embed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kobler hver embedding sammen med sin opskrift og bygger Cypher til chunks\nconst recipes = $('Parse opskrifter').all();\nconst chunks = $input.all().map((item, i) => ({\n  id: recipes[i].json.id + '-main',\n  recipeId: recipes[i].json.id,\n  text: recipes[i].json.chunkText,\n  embedding: item.json.embeddings[0],\n  source: 'Food.com recipes.csv (RecipeId ' + recipes[i].json.id + ')',\n  type: 'recipe'\n}));\nconst statement = [\n  'UNWIND $chunks AS ch',\n  'MERGE (r:Recipe {id: ch.recipeId})',\n  'MERGE (c:Chunk {id: ch.id})',\n  'SET c.text = ch.text, c.embedding = ch.embedding, c.source = ch.source, c.type = ch.type',\n  'MERGE (c)-[:PART_OF]->(r)'\n].join(' ');\nreturn [{ json: { statements: [{ statement, parameters: { chunks } }] } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Byg chunk-Cypher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic bmVvNGo6cGFzc3dvcmQxMjM=" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Neo4j - gem chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 140]
+    }
+  ],
+  "connections": {
+    "Start": { "main": [[{ "node": "Læs CSV", "type": "main", "index": 0 }]] },
+    "Læs CSV": { "main": [[{ "node": "CSV til rækker", "type": "main", "index": 0 }]] },
+    "CSV til rækker": { "main": [[{ "node": "Parse opskrifter", "type": "main", "index": 0 }]] },
+    "Parse opskrifter": {
+      "main": [[
+        { "node": "Byg graf-Cypher", "type": "main", "index": 0 },
+        { "node": "Ollama - embed", "type": "main", "index": 0 }
+      ]]
+    },
+    "Byg graf-Cypher": { "main": [[{ "node": "Neo4j - gem graf", "type": "main", "index": 0 }]] },
+    "Ollama - embed": { "main": [[{ "node": "Byg chunk-Cypher", "type": "main", "index": 0 }]] },
+    "Byg chunk-Cypher": { "main": [[{ "node": "Neo4j - gem chunks", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

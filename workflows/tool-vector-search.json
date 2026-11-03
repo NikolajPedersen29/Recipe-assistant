@@ -1,0 +1,158 @@
+{
+  "name": "Tool - vector_search",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "query"
+            },
+            {
+              "name": "k",
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', input: String($json.query || '') }) }}",
+        "options": {}
+      },
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "name": "Ollama - embed query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Bygger vektorsøgningen og beriger hvert hit med fakta fra grafen\nconst input = $('Start').first().json;\nconst k = Math.max(1, Math.min(20, Math.round(Number(input.k) || 5)));\nconst embedding = $input.first().json.embeddings[0];\nconst statement = [\n  \"CALL db.index.vector.queryNodes('recipe_chunks', $k, $embedding) YIELD node, score\",\n  \"MATCH (node)-[:PART_OF]->(r:Recipe)\",\n  \"OPTIONAL MATCH (r)-[:IN_CATEGORY]->(c:Category)\",\n  \"RETURN r.id AS recipeId, r.name AS name, round(score, 3) AS score,\",\n  \"  r.totalTime AS minutes, r.rating AS rating, c.name AS category,\",\n  \"  [(r)-[:HAS_INGREDIENT]->(i) | i.name] AS ingredients,\",\n  \"  [(r)-[:HAS_TAG]->(t) | t.name] AS tags,\",\n  \"  node.text AS text, node.source AS source\",\n  \"ORDER BY score DESC\"\n].join(' ');\nreturn [{ json: { statements: [{ statement, parameters: { k, embedding } }] } }];"
+      },
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "name": "Byg vektor-Cypher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic bmVvNGo6cGFzc3dvcmQxMjM="
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "b1000000-0000-4000-8000-000000000004",
+      "name": "Neo4j - kør query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Laver Neo4j's svar om til en læsbar liste til agenten\nconst res = $input.first().json;\nif (res.errors && res.errors.length) {\n  return [{ json: { error: res.errors.map(e => e.message).join('; ') } }];\n}\nconst r = res.results[0];\nconst rows = r.data.map(d => Object.fromEntries(r.columns.map((c, i) => [c, d.row[i]])));\nreturn [{ json: { count: rows.length, results: rows } }];"
+      },
+      "id": "b1000000-0000-4000-8000-000000000005",
+      "name": "Formatér resultat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Ollama - embed query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama - embed query": {
+      "main": [
+        [
+          {
+            "node": "Byg vektor-Cypher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Byg vektor-Cypher": {
+      "main": [
+        [
+          {
+            "node": "Neo4j - kør query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j - kør query": {
+      "main": [
+        [
+          {
+            "node": "Formatér resultat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Start": [
+      {
+        "json": {
+          "query": "something creamy and quick for a weeknight",
+          "k": 5
+        }
+      }
+    ]
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
